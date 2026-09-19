@@ -1,4 +1,3 @@
-<img width="1561" height="898" alt="Screenshot from 2026-09-19 01-26-43" src="https://github.com/user-attachments/assets/567daa7e-3209-4fa8-9c6c-902549d8a0e1" />
 # Eyoyo EY-015P Barcode Scanner (BLE) for Home Assistant
 
 A custom Home Assistant integration for the **Eyoyo EY-015P** Bluetooth barcode scanner, connected directly over **Bluetooth LE** — no phone, no companion app, no cloud.
