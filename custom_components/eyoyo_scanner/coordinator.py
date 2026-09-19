@@ -11,12 +11,18 @@ Data format (confirmed empirically): raw ASCII text of the scanned code,
 terminated by a carriage return (0x0D). May arrive fragmented across several
 notification packets when it exceeds the ATT_MTU-3 payload (20 bytes by
 default) - fragments are buffered until the terminator is seen.
+
+Battery level: the standard GATT service (0x180F/0x2A19) is an unusable
+firmware stub (always 100%). The real level arrives over the SAME
+notification channel as scans, in reply to a command written to 0x2AA2 (see
+const.py) - distinguished from a real scan by a strict pattern match.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 from bleak import BleakClient
@@ -27,11 +33,17 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_time_interval
 
 from .const import (
+    BATTERY_REPLY_PATTERN,
+    CHAR_UUID_COMMAND,
     CHAR_UUID_SCAN_DATA,
+    CMD_QUERY_BATTERY,
+    COMMAND_WRITE_TIMEOUT_SECONDS,
     EVENT_BARCODE_SCANNED,
     SCAN_VALUE_TERMINATOR,
     SOURCE_BLE_DIRECT,
 )
+
+_BATTERY_REPLY_RE = re.compile(BATTERY_REPLY_PATTERN)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,6 +65,7 @@ class EyoyoScannerCoordinator:
         self.last_code: str | None = None
         self.last_scanned_at: str | None = None
         self.connected: bool = False
+        self.battery_level: int | None = None
         self._listeners: list = []
 
         # HA/habluetooth can dynamically reroute to a different BLE proxy on
@@ -111,6 +124,15 @@ class EyoyoScannerCoordinator:
         if not code:
             return
 
+        if _BATTERY_REPLY_RE.match(code):
+            # Reply to the "Battery Remaining" configuration command - not a
+            # real scanned code, do not touch last_code/EVENT_BARCODE_SCANNED.
+            self.battery_level = int(code.rstrip("%"))
+            _LOGGER.info("Battery level (Eyoyo BLE): %s", code)
+            for cb in list(self._listeners):
+                cb()
+            return
+
         now_iso = datetime.now(timezone.utc).isoformat()
         self.last_code = code
         self.last_scanned_at = now_iso
@@ -122,6 +144,45 @@ class EyoyoScannerCoordinator:
         )
         for cb in list(self._listeners):
             cb()
+
+        # Refresh the battery level on every real scan - fire-and-forget,
+        # must never block or delay the scan handling itself.
+        if self._client is not None:
+            self.hass.async_create_task(self._async_write_command(self._client, CMD_QUERY_BATTERY))
+
+    async def async_send_command(self, command: bytes) -> bool:
+        """Public API for configuration entities (select/switch/button):
+        sends a raw command to the scanner. Returns True on success, False
+        if not connected, on failure, or on timeout."""
+        if self._client is None or not self._client.is_connected:
+            _LOGGER.warning("Cannot send command %s: scanner not connected", command)
+            return False
+        return await self._async_write_command(self._client, command)
+
+    async def _async_write_command(self, client: BleakClient, command: bytes) -> bool:
+        """Writes a configuration command to 0x2AA2 (used for battery and
+        for every setting decoded from the official manual: beep/vibration,
+        sleep timer, scanning mode).
+
+        Never documented by the manufacturer - protected by a strict
+        timeout to never block indefinitely.
+        """
+        _LOGGER.info("Sending command %s to 0x2AA2...", command)
+        try:
+            await asyncio.wait_for(
+                client.write_gatt_char(CHAR_UUID_COMMAND, command, response=True),
+                timeout=COMMAND_WRITE_TIMEOUT_SECONDS,
+            )
+            _LOGGER.info("Command %s written successfully to 0x2AA2", command)
+            return True
+        except asyncio.TimeoutError:
+            _LOGGER.warning(
+                "Write to 0x2AA2 (%s) timed out after %ds", command, COMMAND_WRITE_TIMEOUT_SECONDS
+            )
+            return False
+        except BleakError as err:
+            _LOGGER.warning("Failed to write to 0x2AA2 (%s): %s", command, err)
+            return False
 
     async def _async_liveness_tick(self, _now) -> None:
         """Periodically checks the connection is still alive and reconnects
@@ -232,5 +293,8 @@ class EyoyoScannerCoordinator:
             except BleakError:
                 pass
             return None
+
+        # Refresh the battery level right away on connection.
+        await self._async_write_command(client, CMD_QUERY_BATTERY)
 
         return client

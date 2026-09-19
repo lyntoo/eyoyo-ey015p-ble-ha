@@ -8,7 +8,12 @@ from homeassistant.core import Event, HomeAssistant
 from .coordinator import EyoyoScannerCoordinator
 from .models import EyoyoConfigEntry, EyoyoData
 
-PLATFORMS: list[Platform] = [Platform.SENSOR]
+PLATFORMS: list[Platform] = [
+    Platform.SENSOR,
+    Platform.SELECT,
+    Platform.SWITCH,
+    Platform.BUTTON,
+]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: EyoyoConfigEntry) -> bool:
