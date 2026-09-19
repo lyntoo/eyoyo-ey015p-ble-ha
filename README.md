@@ -21,7 +21,7 @@ The BLE data channel and the configuration command protocol are both undocumente
 - **Works through ESPHome Bluetooth proxies** — not limited to the range of a single adapter
 - **Automatic discovery** — the scanner shows up for one-tap setup when advertising; manual selection also supported
 - **Real-time via GATT notifications** — no polling loop; scans are pushed instantly by the scanner
-- **Live battery level** — refreshed automatically on connection and after every scan, no manual QR scan needed
+- **Live battery level** — refreshed automatically on connection and after 15s of scan inactivity (debounced, never during a burst — see Protocol notes), plus an on-demand refresh button
 - **On-device settings controlled from Home Assistant** — beep volume, vibration, auto power-off timer, sleep now, and scanning mode, all as native entities
 - **Entities:**
   - `sensor` — last scanned code, with `last_scanned_at`, `connected`, and `address` attributes
@@ -29,7 +29,7 @@ The BLE data channel and the configuration command protocol are both undocumente
   - `select` — beep volume (Off / Low / Medium / High)
   - `switch` — vibration on scan
   - `select` — auto power-off timer (30s / 2 / 5 / 10 / 30 min / Never)
-  - `button` — put the scanner to sleep immediately
+  - `button` — put the scanner to sleep immediately, or refresh the battery level on demand
   - `select` — scanning mode (Manual Trigger / Continuous / Auto-Sensing)
 - **Event:** `eyoyo_barcode_scanned` fired on every scan (`code`, `source`, `address`) — trigger automations directly (e.g. building a grocery list) without touching the sensor
 
@@ -114,6 +114,8 @@ After restoring defaults, you may need to put the scanner back into BLE pairing 
 **Scan data.** The scanner exposes a non-standard service `0xFEEA` containing characteristic `0x2AA1` (mislabeled "Magnetic Flux Density - 3D" by generic BLE UUID databases — a standard SIG 16-bit UUID repurposed by the manufacturer). Captured via Bluetooth HCI snoop during a real scan: after the client bonds and enables the CCCD, the scanner pushes a genuine GATT **notification** (ATT opcode `0x1b`) containing the scanned value as raw ASCII text terminated by a carriage return (`0x0D`) — asynchronously, with no correlation to any read request. The characteristic's readable value is never updated; only the pushed notification carries the data. Values longer than the negotiated ATT_MTU (20-byte payload by default) arrive fragmented across multiple consecutive notification packets, which the integration buffers and reassembles up to the terminator.
 
 **Battery.** The standard GATT Battery Service (`0x180F`/`0x2A19`) is present but is a firmware stub that always reports 100%, confirmed with two independent BLE clients — unusable. The manual's "Battery Remaining" configuration QR code makes the scanner report the real percentage as plain ASCII text (e.g. `"60%"`) over the *same* notification channel as a normal scan; the integration distinguishes this reply from a real scanned code with a strict pattern match.
+
+**Battery refresh timing — a real production incident.** An earlier version refreshed the battery after *every* scan via a fire-and-forget BLE write. In practice, scanning several items in quick succession (well within normal use — under ~10s apart) fired overlapping writes to the same characteristic on the same connection. One of them never returned — no timeout, no error, nothing logged — and the BLE connection was permanently wedged until Home Assistant was restarted. The fix: all writes to `0x2AA2` are now serialized behind a lock, a write that does time out proactively disconnects the client (forcing a clean reconnect instead of leaving a zombie connection), and the battery refresh itself is debounced — scheduled 15 seconds after the *last* scan and postponed on every new one, so it only ever fires once the scanner goes quiet. None of this touches the scan-handling path itself; scans are always processed immediately regardless of what the battery refresh is doing.
 
 **Configuration commands.** Every configuration QR code printed in the official manual encodes a short text command. Decoding these QR codes (with `pyzbar`) revealed two command families, both written to characteristic `0x2AA2` ("Language" per the manual, write-only):
 - `^&NNN&^` (3-digit hex-ish code) — used for battery query, beep/vibration, and sleep timer settings

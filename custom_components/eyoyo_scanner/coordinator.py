@@ -16,6 +16,9 @@ Battery level: the standard GATT service (0x180F/0x2A19) is an unusable
 firmware stub (always 100%). The real level arrives over the SAME
 notification channel as scans, in reply to a command written to 0x2AA2 (see
 const.py) - distinguished from a real scan by a strict pattern match.
+Refreshed via a debounced background task (15s after the last scan, never
+during a burst) plus an on-demand button - never on every single scan, which
+was found in production to permanently wedge the BLE connection.
 """
 
 from __future__ import annotations
@@ -29,10 +32,11 @@ from bleak import BleakClient
 from bleak.exc import BleakError
 from bleak_retry_connector import establish_connection
 from homeassistant.components import bluetooth
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
 
 from .const import (
+    BATTERY_REFRESH_DEBOUNCE_SECONDS,
     BATTERY_REPLY_PATTERN,
     CHAR_UUID_COMMAND,
     CHAR_UUID_SCAN_DATA,
@@ -60,6 +64,8 @@ class EyoyoScannerCoordinator:
         self._notify_buffer = bytearray()
         self._liveness_unsub = None
         self._connect_lock = asyncio.Lock()
+        self._command_lock = asyncio.Lock()
+        self._battery_refresh_unsub = None
         self._stopped = False
 
         self.last_code: str | None = None
@@ -100,6 +106,9 @@ class EyoyoScannerCoordinator:
         if self._liveness_unsub is not None:
             self._liveness_unsub()
             self._liveness_unsub = None
+        if self._battery_refresh_unsub is not None:
+            self._battery_refresh_unsub()
+            self._battery_refresh_unsub = None
         if self._client is not None and self._client.is_connected:
             await self._client.disconnect()
         self._client = None
@@ -145,9 +154,29 @@ class EyoyoScannerCoordinator:
         for cb in list(self._listeners):
             cb()
 
-        # Refresh the battery level on every real scan - fire-and-forget,
-        # must never block or delay the scan handling itself.
-        if self._client is not None:
+        # Refresh the battery level after 15s of INACTIVITY, not after every
+        # scan - an earlier "refresh on every scan" approach caused
+        # overlapping 0x2AA2 writes during a rapid scanning burst that
+        # permanently wedged the BLE connection (confirmed in production:
+        # zero timeout/error logged, the write task simply never returned).
+        # This scheduling never blocks or delays the scan itself.
+        self._schedule_battery_refresh()
+
+    def _schedule_battery_refresh(self) -> None:
+        """Schedules a battery refresh 15s after the LATEST scan (debounce)
+        - postponed on every new scan, so it only fires once the scanner
+        has gone quiet. Guarantees at most one write from this mechanism is
+        ever in flight."""
+        if self._battery_refresh_unsub is not None:
+            self._battery_refresh_unsub()
+        self._battery_refresh_unsub = async_call_later(
+            self.hass, BATTERY_REFRESH_DEBOUNCE_SECONDS, self._async_battery_refresh_callback
+        )
+
+    @callback
+    def _async_battery_refresh_callback(self, _now) -> None:
+        self._battery_refresh_unsub = None
+        if self._client is not None and self._client.is_connected:
             self.hass.async_create_task(self._async_write_command(self._client, CMD_QUERY_BATTERY))
 
     async def async_send_command(self, command: bytes) -> bool:
@@ -166,23 +195,35 @@ class EyoyoScannerCoordinator:
 
         Never documented by the manufacturer - protected by a strict
         timeout to never block indefinitely.
+
+        Serialized via _command_lock: at most one write in flight on this
+        connection at a time (concurrent writes were able to permanently
+        wedge the BLE connection - see const.py's note on
+        BATTERY_REFRESH_DEBOUNCE_SECONDS).
         """
-        _LOGGER.info("Sending command %s to 0x2AA2...", command)
-        try:
-            await asyncio.wait_for(
-                client.write_gatt_char(CHAR_UUID_COMMAND, command, response=True),
-                timeout=COMMAND_WRITE_TIMEOUT_SECONDS,
-            )
-            _LOGGER.info("Command %s written successfully to 0x2AA2", command)
-            return True
-        except asyncio.TimeoutError:
-            _LOGGER.warning(
-                "Write to 0x2AA2 (%s) timed out after %ds", command, COMMAND_WRITE_TIMEOUT_SECONDS
-            )
-            return False
-        except BleakError as err:
-            _LOGGER.warning("Failed to write to 0x2AA2 (%s): %s", command, err)
-            return False
+        async with self._command_lock:
+            _LOGGER.info("Sending command %s to 0x2AA2...", command)
+            try:
+                await asyncio.wait_for(
+                    client.write_gatt_char(CHAR_UUID_COMMAND, command, response=True),
+                    timeout=COMMAND_WRITE_TIMEOUT_SECONDS,
+                )
+                _LOGGER.info("Command %s written successfully to 0x2AA2", command)
+                return True
+            except asyncio.TimeoutError:
+                _LOGGER.warning(
+                    "Write to 0x2AA2 (%s) timed out after %ds - connection likely "
+                    "compromised, forcing a disconnect for a clean reconnect",
+                    command, COMMAND_WRITE_TIMEOUT_SECONDS,
+                )
+                try:
+                    await asyncio.wait_for(client.disconnect(), timeout=5)
+                except (BleakError, asyncio.TimeoutError):
+                    pass  # best-effort - the liveness tick will detect is_connected=False either way
+                return False
+            except BleakError as err:
+                _LOGGER.warning("Failed to write to 0x2AA2 (%s): %s", command, err)
+                return False
 
     async def _async_liveness_tick(self, _now) -> None:
         """Periodically checks the connection is still alive and reconnects

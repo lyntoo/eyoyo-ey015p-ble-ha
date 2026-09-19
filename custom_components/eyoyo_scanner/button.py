@@ -8,7 +8,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import CMD_SLEEP_NOW, DOMAIN
+from .const import CMD_QUERY_BATTERY, CMD_SLEEP_NOW, DOMAIN
 from .models import EyoyoConfigEntry
 
 
@@ -22,6 +22,7 @@ async def async_setup_entry(
     async_add_entities(
         [
             EyoyoCommandButton(entry_data, "Sleep Now", "mdi:sleep", CMD_SLEEP_NOW),
+            EyoyoCommandButton(entry_data, "Battery Status", "mdi:battery-sync", CMD_QUERY_BATTERY),
         ]
     )
 

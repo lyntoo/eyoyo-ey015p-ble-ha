@@ -59,6 +59,14 @@ COMMAND_WRITE_TIMEOUT_SECONDS = 8
 # --- Battery (manual section 7) ---
 CMD_QUERY_BATTERY = b"^&037&^"
 
+# Inactivity delay (no scans) after which the battery is refreshed
+# automatically (debounce - postponed on every new scan, so it only fires
+# once the scanner has gone quiet). Replaces a "refresh on every scan"
+# approach that caused overlapping BLE writes to permanently wedge the
+# connection during a rapid scanning burst - see README's Protocol notes.
+# Never blocks or delays handling of the scan itself.
+BATTERY_REFRESH_DEBOUNCE_SECONDS = 15
+
 # --- Beep & Vibration Setting (manual section 14) ---
 CMD_BEEP_VOLUME_OFF = b"^&03A&^"
 CMD_BEEP_VOLUME_LOW = b"^&03D&^"
