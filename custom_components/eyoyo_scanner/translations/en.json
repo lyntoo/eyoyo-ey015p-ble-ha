@@ -1,0 +1,18 @@
+{
+  "config": {
+    "step": {
+      "bluetooth_confirm": {
+        "description": "Do you want to set up the Eyoyo scanner {name}?"
+      },
+      "user": {
+        "data": {
+          "address": "Device"
+        }
+      }
+    },
+    "abort": {
+      "no_devices_found": "No Eyoyo scanner found nearby.",
+      "already_configured": "This device is already configured."
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "domain": "eyoyo_scanner",
+  "name": "Eyoyo EY-015P Barcode Scanner (BLE)",
+  "bluetooth": [
+    {
+      "local_name": "EY-015P*"
+    }
+  ],
+  "codeowners": ["@lyntoo"],
+  "config_flow": true,
+  "dependencies": ["bluetooth", "bluetooth_adapters"],
+  "documentation": "https://github.com/lyntoo/eyoyo-ey015p-ble-ha",
+  "issue_tracker": "https://github.com/lyntoo/eyoyo-ey015p-ble-ha/issues",
+  "integration_type": "device",
+  "iot_class": "local_push",
+  "requirements": ["bleak>=0.21.1", "bleak-retry-connector>=3.0.0"],
+  "version": "1.0.0"
+}
