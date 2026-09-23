@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -35,6 +36,7 @@ class EyoyoLastScanSensor(SensorEntity):
         self._attr_unique_id = f"{entry_data.address}_last_scanned_code"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry_data.address)},
+            connections={(CONNECTION_BLUETOOTH, entry_data.address)},
             name="Eyoyo EY-015P",
             manufacturer="Eyoyo",
             model="EY-015P",
